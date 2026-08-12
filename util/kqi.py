@@ -3,7 +3,7 @@
 
 ' a module for knowledge quantification index (KQI) '
 
-__author__ = 'Huquan Kang'
+__author__ = 'Huquan Kang' # And me, a dumbass
 
 
 import math
@@ -20,9 +20,9 @@ class DiGraph():
         self.__succ = {node: [succ, ...]}
         decay: Percentage of decay per decade, from 0 to 1.
         '''
-        self.__pred = {}  
-        self.__succ = {}  
-        self.__date = {}  
+        self.__pred = {}
+        self.__succ = {}
+        self.__date = {}
         self.__DECAY = 1
         self.__TODAY = datetime.date.today()
         self.__UPDATE_FLAG = False
@@ -181,54 +181,53 @@ class DiGraph():
                         else:
                             scc_queue.append(v)
 
+    # TODO: THIS IS SLOP; REVIEW TO MAKE SURE SOUND REMOVAL OF ALL CYCLES
     def remove_cycles(self):
         """
-        1. remove edges outside the node set, edges with time reversal (at the granularity of years)
-        2. treat papers that form strongly connected components as equivalent and de-loop
+        Enforces a strict Directed Acyclic Graph (DAG) by pruning
+        any citation that violates temporal causality.
         """
         count = 0
-        for v in tqdm(self.nodes()):
-            removed_nodes = [u for u in self.predecessors(
-                v) if u not in self.__pred or self.__date[u].year > self.__date[v].year]
-            for u in removed_nodes:
+        # 1. First pass: Handle temporal violations and identity self-loops
+        for v in list(self.nodes()):
+            # Predecessors (u) must be OLDER than v.
+            # If u is newer or the same age, we check ID as a tie-breaker.
+            invalid_preds = [
+                u for u in self.predecessors(v)
+                if u not in self.__pred or
+                self.__date[u] > self.__date[v] or
+                (self.__date[u] == self.__date[v] and u >= v) # Tie-breaker
+            ]
+
+            for u in invalid_preds:
                 self.__pred[v].remove(u)
-                self.__succ[u].remove(v)
+                if v in self.__succ.get(u, []):
+                    self.__succ[u].remove(v)
                 count += 1
 
-        print('Mis-Relationship %s edges / %s nodes' % (count, self.number_of_nodes()))
+        # 2. Second pass: Systematic Cycle Removal (Feedback Arc Set)
+        # This catches any remaining complex cycles (A->B->C->A)
+        # that survived the temporal filter.
+        import networkx as nx
 
-        for scc in tqdm(self.__strongly_connected_components()):
-            if len(scc) > 1 and len(scc) < 10:
-                print('SCC with size of %s: %s' % (len(scc), scc))
-                pred = set()
-                succ = set()
-                for v in scc:
-                    pred.update(self.predecessors(v))
-                    succ.update(self.successors(v))
-                pred -= scc
-                succ -= scc
-                for v in scc:
-                    self.__pred[v] = list(pred)
-                    self.__succ[v] = list(succ)
-                    for u in pred:
-                        if v not in self.successors(u):
-                            self.__succ[u].append(v)
-                    for u in succ:
-                        if v not in self.predecessors(u):
-                            self.__pred[u].append(v)
-            elif len(scc) >= 10:
-                scc_list = list(scc)
-                scc_id = {v: i for i, v in enumerate(scc_list)}
-                scc_edges = [[scc_id[u], scc_id[v]]
-                             for v in scc_list for u in self.predecessors(v) if u in scc]
-                IG = igraph.Graph(n=len(scc), edges=scc_edges, directed=True)
-                remove_edges = [[scc_list[scc_edges[remove_index][0]], scc_list[scc_edges[remove_index][1]]]
-                                for remove_index in IG.feedback_arc_set()]
-                print('SCC with size of %s: feedback_arc_set with %s: %s' %
-                      (len(scc), len(remove_edges), remove_edges))
-                for u, v in remove_edges:
-                    self.__succ[u].remove(v)
-                    self.__pred[v].remove(u)
+        # Build a temporary graph to find cycles
+        temp_G = nx.DiGraph()
+        for v in self.nodes():
+            for u in self.predecessors(v):
+                temp_G.add_edge(u, v)
+
+        while not nx.is_directed_acyclic_graph(temp_G):
+            # Find a single cycle and break one edge
+            cycle = nx.find_cycle(temp_G, orientation='original')
+            u, v, _ = cycle[0]
+            # Remove it from your internal data
+            self.__pred[v].remove(u)
+            self.__succ[u].remove(v)
+            # Remove from temp graph to check next cycle
+            temp_G.remove_edge(u, v)
+            count += 1
+
+        print(f'Total edges pruned to enforce DAG: {count}')
         self.__UPDATE_FLAG = True
 
     def topological_sort(self):
